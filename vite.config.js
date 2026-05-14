@@ -4,6 +4,10 @@ export default defineConfig({
   optimizeDeps: {
     exclude: ['@mlc-ai/web-llm']
   },
+  build: {
+    outDir: 'dist',
+    assetsDir: 'assets'
+  },
   server: {
     headers: {
       'Cross-Origin-Opener-Policy': 'same-origin',
