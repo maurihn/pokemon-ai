@@ -1,91 +1,86 @@
 <!DOCTYPE html>
 <html lang="es">
 <head>
-  <meta charset="UTF-8" />
-  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Pokémon AI — Tu asistente Pokémon local</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/src/style.css" />
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Pokémon AI — Tu Pokédex con IA</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml"/>
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700;900&family=Press+Start+2P&display=swap" rel="stylesheet"/>
+  <link rel="stylesheet" href="/src/style.css"/>
 </head>
 <body>
-  <div class="app">
-    <header class="header">
-      <div class="logo">
-        <img src="/favicon.svg" alt="Pokeball" class="pokeball-logo" />
-        <div class="title-block">
-          <h1>Pokémon AI</h1>
-          <p class="subtitle">Tu asistente Pokémon local</p>
-          <p class="powered-by-header">⚡ Powered by FusionAI Agents</p>
-        </div>
+
+<!-- HEADER -->
+<header class="app-header">
+  <div class="header-inner">
+    <div class="header-logo">
+      <div class="pokeball-icon"></div>
+      <div class="header-titles">
+        <h1 class="app-title">Pokémon AI</h1>
+        <p class="app-sub">Tu Pokédex viviente con IA</p>
+        <p class="powered-by">⚡ Powered by <a href="https://agents.fusionai.now" target="_blank">FusionAI Agents</a></p>
       </div>
-    </header>
-
-    <main class="main">
-      <!-- Loading screen -->
-      <section id="loadingScreen" class="loading-screen">
-        <div class="loading-card">
-          <div class="spinning-pokeball">
-            <img src="/favicon.svg" alt="Loading" />
-          </div>
-          <h2>Cargando modelo de IA...</h2>
-          <div class="progress-wrap">
-            <div id="loadingBar" class="progress-bar"></div>
-          </div>
-          <p id="loadingStatus" class="loading-status">Iniciando...</p>
-          <p class="loading-info">
-            El modelo Llama 3.2 1B se descarga una sola vez (~800 MB) y queda
-            en la caché de tu navegador. Las siguientes visitas serán
-            instantáneas. Todo corre <strong>localmente</strong> en tu equipo
-            usando WebGPU.
-          </p>
-        </div>
-      </section>
-
-      <!-- Chat -->
-      <section id="chatContainer" class="chat-container hidden">
-        <div id="messages" class="messages"></div>
-
-        <div class="input-area">
-          <div class="input-row">
-            <input
-              id="userInput"
-              type="text"
-              placeholder="Pregúntame algo sobre Pokémon..."
-              autocomplete="off"
-            />
-            <button id="sendBtn" class="send-btn" aria-label="Enviar">
-              <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor">
-                <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/>
-              </svg>
-            </button>
-          </div>
-
-          <div class="suggestions">
-            <button class="chip" data-text="¿Cuáles son los tipos de Charizard?">¿Cuáles son los tipos de Charizard?</button>
-            <button class="chip" data-text="¿Quién tiene más ataque, Mewtwo o Dragonite?">¿Quién tiene más ataque, Mewtwo o Dragonite?</button>
-            <button class="chip" data-text="Explícame las debilidades de Gengar">Explícame las debilidades de Gengar</button>
-            <button class="chip" data-text="¿Cuál es la evolución de Eevee?">¿Cuál es la evolución de Eevee?</button>
-          </div>
-        </div>
-      </section>
-    </main>
-
-    <!-- Slide-in detail panel -->
-    <aside id="detailPanel" class="detail-panel" aria-hidden="true">
-      <button class="detail-close" id="detailClose" aria-label="Cerrar">✕</button>
-      <div id="detailContent" class="detail-content"></div>
-    </aside>
-    <div id="detailBackdrop" class="detail-backdrop" hidden></div>
-
-    <footer class="footer">
-      <span>Powered by <a href="https://github.com/mlc-ai/web-llm" target="_blank" rel="noopener">WebLLM</a> + <a href="https://pokeapi.co/" target="_blank" rel="noopener">PokéAPI</a></span>
-      <span class="footer-fusion">⚡ Powered by <a href="#" target="_blank" rel="noopener">FusionAI Agents</a></span>
-    </footer>
+    </div>
   </div>
+</header>
 
-  <script type="module" src="/src/main.js"></script>
+<!-- LOADING SCREEN -->
+<div id="loadingScreen" class="loading-screen">
+  <div class="loading-card">
+    <div class="loading-pokeball"></div>
+    <h2 class="loading-title">Cargando modelo de IA...</h2>
+    <div class="loading-bar-wrap"><div id="loadingBar" class="loading-bar"></div></div>
+    <p id="loadingStatus" class="loading-status">Iniciando...</p>
+    <p class="loading-hint">El modelo se descarga una vez (~800MB) y queda en caché 🚀</p>
+  </div>
+</div>
+
+<!-- CHAT CONTAINER -->
+<div id="chatContainer" class="chat-container hidden">
+  <div id="messages" class="messages"></div>
+  <div class="input-area">
+    <div id="voiceStatus" class="voice-status"></div>
+    <div class="input-row">
+      <input id="userInput" type="text" placeholder="Pregúntame sobre cualquier Pokémon..." autocomplete="off"/>
+      <button id="voiceBtn" class="voice-btn" title="Hablar">🎙️</button>
+      <button id="sendBtn" class="send-btn" title="Enviar">➤</button>
+    </div>
+    <div class="suggestions">
+      <button class="chip" data-text="¿Cuáles son los tipos de Charizard?">🔥 Charizard</button>
+      <button class="chip" data-text="¿Quién gana, Mewtwo vs Dragonite?">⚔️ Mewtwo vs Dragonite</button>
+      <button class="chip" data-text="Explícame las debilidades de Gengar">👻 Gengar</button>
+      <button class="chip" data-text="Compara Pikachu con Raichu">⚡ Pikachu vs Raichu</button>
+    </div>
+  </div>
+</div>
+
+<!-- DETAIL MODAL (full screen, from Pokédex design) -->
+<div id="detailBackdrop" class="modal-backdrop hidden"></div>
+<div id="detailModal" class="modal-wrap hidden">
+  <div class="modal-body">
+    <button id="detailClose" class="modal-close">✕</button>
+    <div id="modalLeft" class="modal-left"></div>
+    <div id="modalRight" class="modal-right"></div>
+  </div>
+</div>
+
+<!-- BATTLE MODAL (comparison with animations) -->
+<div id="battleModal" class="cmp-backdrop">
+  <div id="cmpModal" class="cmp-modal">
+    <button id="cmpClose" class="cmp-close">✕</button>
+    <div id="cmpVsFlash" class="cmp-vs-flash"></div>
+    <div id="cmpVsOverlay" class="cmp-vs-overlay">VS</div>
+    <div class="cmp-title">⚔️ Comparación de Pokémon ⚔️</div>
+    <div id="cmpCols" class="cmp-cols"></div>
+    <div id="cmpStats" class="cmp-stats"></div>
+    <!-- Winner screen overlay -->
+    <div class="cmp-winner-screen" id="cmpWinnerScreen" aria-hidden="true">
+      <canvas id="cmpConfetti" class="cmp-confetti-canvas"></canvas>
+      <div class="cmp-winner-inner" id="cmpWinnerInner"></div>
+    </div>
+  </div>
+</div>
+
+<script type="module" src="/src/main.js"></script>
 </body>
 </html>
