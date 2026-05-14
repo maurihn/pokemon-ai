@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Pokémon AI — Tu asistente Pokémon local</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/src/style.css" />
+</head>
+<body>
+  <div class="app">
+    <header class="header">
+      <div class="logo">
+        <img src="/favicon.svg" alt="Pokeball" class="pokeball-logo" />
+        <div class="title-block">
+          <h1>Pokémon AI</h1>
+          <p class="subtitle">Tu asistente Pokémon local</p>
+        </div>
+      </div>
+    </header>
+
+    <main class="main">
+      <!-- Loading screen -->
+      <section id="loadingScreen" class="loading-screen">
+        <div class="loading-card">
+          <div class="spinning-pokeball">
+            <img src="/favicon.svg" alt="Loading" />
+          </div>
+          <h2>Cargando modelo de IA...</h2>
+          <div class="progress-wrap">
+            <div id="loadingBar" class="progress-bar"></div>
+          </div>
+          <p id="loadingStatus" class="loading-status">Iniciando...</p>
+          <p class="loading-info">
+            El modelo Llama 3.2 1B se descarga una sola vez (~800 MB) y queda
+            en la caché de tu navegador. Las siguientes visitas serán
+            instantáneas. Todo corre <strong>localmente</strong> en tu equipo
+            usando WebGPU.
+          </p>
+        </div>
+      </section>
+
+      <!-- Chat -->
+      <section id="chatContainer" class="chat-container hidden">
+        <div id="messages" class="messages"></div>
+
+        <div class="input-area">
+          <div class="input-row">
+            <input
+              id="userInput"
+              type="text"
+              placeholder="Pregúntame algo sobre Pokémon..."
+              autocomplete="off"
+            />
+            <button id="sendBtn" class="send-btn" aria-label="Enviar">
+              <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor">
+                <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/>
+              </svg>
+            </button>
+          </div>
+
+          <div class="suggestions">
+            <button class="chip" data-text="¿Cuáles son los tipos de Charizard?">¿Cuáles son los tipos de Charizard?</button>
+            <button class="chip" data-text="¿Quién tiene más ataque, Mewtwo o Dragonite?">¿Quién tiene más ataque, Mewtwo o Dragonite?</button>
+            <button class="chip" data-text="Explícame las debilidades de Gengar">Explícame las debilidades de Gengar</button>
+            <button class="chip" data-text="¿Cuál es la evolución de Eevee?">¿Cuál es la evolución de Eevee?</button>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <span>Powered by <a href="https://github.com/mlc-ai/web-llm" target="_blank" rel="noopener">WebLLM</a> + <a href="https://pokeapi.co/" target="_blank" rel="noopener">PokéAPI</a></span>
+    </footer>
+  </div>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
