@@ -1,3 +1,4 @@
+// analytics enabled
 import * as webllm from '@mlc-ai/web-llm';
 
 let engine = null;
