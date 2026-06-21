@@ -9,11 +9,13 @@ import {
   getComparisonData
 } from './pokeapi.js';
 
-const SYSTEM_PROMPT = `Eres un experto Pokémon llamado "Professor AI". REGLA ABSOLUTA: SIEMPRE responde en el MISMO idioma que usa el usuario. Si el usuario escribe en español, responde ÚNICAMENTE en español. Si el usuario escribe en inglés, responde ÚNICAMENTE en inglés. NUNCA cambies de idioma sin que el usuario lo pida.
+const SYSTEM_PROMPT = `You are a Pokémon expert called "Professor AI". 
 
-Eres un experto en todos los Pokémon: tipos, estadísticas, evoluciones, habilidades, debilidades y estrategias de batalla. SOLO responde preguntas relacionadas con Pokémon. Si te preguntan algo que no es sobre Pokémon, redirige la conversación amablemente de vuelta al mundo Pokémon.
+CRITICAL RULE: Always respond in the EXACT same language the user writes in. If they write in Spanish → respond in Spanish. If they write in English → respond in English. If they write in French → respond in French. Detect the language automatically and match it perfectly, no exceptions.
 
-Cuando tengas datos de PokéAPI en el contexto, úsalos para dar respuestas precisas. Sé conciso (máximo 2-3 párrafos cortos) y entusiasta.`;
+You are an expert on all Pokémon: types, stats, evolutions, abilities, weaknesses and battle strategies. ONLY answer Pokémon-related questions. If asked something unrelated, kindly redirect back to Pokémon.
+
+When you have PokéAPI data in the context, use it for precise answers. Be concise (max 2-3 short paragraphs) and enthusiastic.`;
 
 const history = [{ role: 'system', content: SYSTEM_PROMPT }];
 
@@ -57,14 +59,6 @@ async function detectComparisonIntent(userText) {
   }
 }
 
-function detectLanguage(text) {
-  // Simple heuristic: check for common Spanish words
-  const spanishWords = ['que', 'qué', 'como', 'cómo', 'cuál', 'cual', 'es', 'son', 'los', 'las', 'del', 'con', 'para', 'tiene', 'puedo', 'dame', 'dime', 'explicame', 'explícame'];
-  const lower = text.toLowerCase();
-  const spanishCount = spanishWords.filter(w => lower.includes(` ${w} `) || lower.startsWith(`${w} `) || lower.endsWith(` ${w}`)).length;
-  return spanishCount >= 1 ? 'es' : 'en';
-}
-
 // ============================================================
 // TOOL SYSTEM — LLM-powered structured intent detection
 // ============================================================
@@ -99,38 +93,21 @@ export async function sendMessage(userText) {
   const mentionedInUser = await extractPokemonNames(userText);
   const contextText = mentionedInUser.length ? await getPokemonContext(mentionedInUser) : '';
 
-  const lang = detectLanguage(userText);
-  const langInstruction = lang === 'es'
-    ? '[INSTRUCCIÓN OBLIGATORIA: El usuario está escribiendo en ESPAÑOL. Debes responder ÚNICAMENTE en español, sin excepción.]'
-    : '[MANDATORY INSTRUCTION: The user is writing in ENGLISH. You MUST respond ONLY in English, no exceptions.]';
-
   // Detect which tool to use
   const tool = await detectTool(userText, mentionedInUser);
-  
-  let isComparison = tool === 'battle';
-  
-  // If battle tool but detectTool already confirmed, skip double-check
-  // If not battle tool, still check keywords as fast path
-  if (!isComparison) {
-    const lower = userText.toLowerCase();
-    isComparison = COMPARE_KEYWORDS.some(k => lower.includes(k)) && mentionedInUser.length >= 2;
+  const isComparison = tool === 'battle' || 
+    (COMPARE_KEYWORDS.some(k => userText.toLowerCase().includes(k)) && mentionedInUser.length >= 2);
+
+  // Build tool hint for LLM (language-neutral — LLM will respond in user's language)
+  let toolHint = '';
+  if (tool === 'battle' || isComparison) {
+    toolHint = '\n[TOOL: battle — compare these two Pokémon and determine which is stronger and why]';
+  } else if (tool === 'search_pokemon') {
+    toolHint = '\n[TOOL: search_pokemon — provide detailed information about this Pokémon]';
   }
 
   const contextBlock = contextText ? `\n[PokéAPI data:\n${contextText}]` : '';
-  
-  // Add tool context to help the LLM understand what to do
-  let toolHint = '';
-  if (tool === 'battle' || isComparison) {
-    toolHint = lang === 'es'
-      ? '\n[HERRAMIENTA: battle — compara estos dos Pokémon y determina cuál es más fuerte y por qué]'
-      : '\n[TOOL: battle — compare these two Pokémon and determine which is stronger and why]';
-  } else if (tool === 'search_pokemon') {
-    toolHint = lang === 'es'
-      ? '\n[HERRAMIENTA: search_pokemon — proporciona información detallada sobre este Pokémon]'
-      : '\n[TOOL: search_pokemon — provide detailed information about this Pokémon]';
-  }
-
-  const fullMsg = `${langInstruction}${toolHint}\n\n${userText}${contextBlock}`;
+  const fullMsg = `${userText}${toolHint}${contextBlock}`;
 
   history.push({ role: 'user', content: fullMsg });
 
@@ -139,9 +116,7 @@ export async function sendMessage(userText) {
     reply = await chat(history);
   } catch (err) {
     console.error('LLM error', err);
-    reply = lang === 'es'
-      ? 'Ups, tuve un problema procesando tu pregunta. ¿Podemos intentar otra vez?'
-      : 'Oops, I had a problem processing your question. Can we try again?';
+    reply = 'Ups / Oops — there was a problem processing your question. Try again?';
   }
   history.push({ role: 'assistant', content: reply });
 
@@ -153,7 +128,6 @@ export async function sendMessage(userText) {
     try {
       comparison = await getComparisonData(mentionedInUser[0], mentionedInUser[1]);
     } catch (err) {
-      console.warn('Comparison fetch failed', err);
       comparison = null;
     }
   }
