@@ -2,11 +2,12 @@ import { defineConfig } from 'vite'
 
 export default defineConfig({
   optimizeDeps: {
-    exclude: ['@mlc-ai/web-llm']
+    exclude: ['@huggingface/transformers']
   },
   build: {
     outDir: 'dist',
-    assetsDir: 'assets'
+    assetsDir: 'assets',
+    target: 'esnext'
   },
   server: {
     headers: {

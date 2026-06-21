@@ -16,7 +16,7 @@ Chat inteligente sobre Pokémon que corre **100% en tu navegador** — sin servi
 
 | Capa | Tecnología |
 |---|---|
-| LLM local | **WebLLM** + Llama 3.2 1B via WebGPU |
+| LLM local | **Transformers.js** + Gemma 4 E2B via WebGPU |
 | Datos Pokémon | **PokéAPI** en tiempo real |
 | Voz | **Web Speech API** (Chrome STT) |
 | Build | **Vite** + ES Modules |

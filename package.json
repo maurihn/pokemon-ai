@@ -1,7 +1,7 @@
 {
   "name": "pokemon-ai",
   "version": "1.0.0",
-  "description": "Pokémon AI Chat powered by WebLLM running locally in the browser",
+  "description": "Pokémon AI Chat powered by Gemma 4 + WebGPU running locally in the browser",
   "type": "module",
   "packageManager": "pnpm@9.15.0",
   "scripts": {
@@ -10,7 +10,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@mlc-ai/web-llm": "^0.2.73"
+    "@huggingface/transformers": "^3.5.0"
   },
   "devDependencies": {
     "vite": "^5.4.0"
