@@ -93,11 +93,35 @@ function addTypingIndicator() {
 function removeTypingIndicator(el) { el && el.remove(); }
 
 // ----------------- Pokémon cards in chat -----------------
-async function renderPokemonCard(name) {
+// Normalize a raw PokéAPI object (battle path) into the flattened card shape
+// that getPokemonCard() produces, so this function works with either input.
+function normalizeCard(p) {
+  if (!p) return null;
+  // Already a flattened card (types is a string array)
+  if (Array.isArray(p.types) && typeof p.types[0] === 'string') return p;
+  // Raw PokéAPI shape (types[i].type.name)
+  return {
+    id: p.id,
+    name: p.name,
+    types: p.types.map(t => t.type.name),
+    stats: p.stats.map(s => ({ name: s.stat.name, value: s.base_stat })),
+    abilities: p.abilities.map(a => ({ name: a.ability.name, hidden: a.is_hidden })),
+    height: p.height / 10,
+    weight: p.weight / 10,
+    sprite: p.sprites?.front_default,
+    artwork: officialArt(p.id),
+    raw: p
+  };
+}
+
+async function renderPokemonCard(nameOrCard) {
   let card;
   try {
-    card = await getPokemonCard(name);
+    card = typeof nameOrCard === 'string'
+      ? await getPokemonCard(nameOrCard)
+      : normalizeCard(nameOrCard);
   } catch { return null; }
+  if (!card) return null;
 
   const primary = card.types[0];
   const color = TYPE_COLORS[primary] || '#888';
@@ -673,21 +697,30 @@ async function handleSend() {
   const typing = addTypingIndicator();
 
   try {
-    const { reply, pokemonInReply, comparison } = await sendMessage(text);
+    const { reply, pokemonInReply, comparison, cards } = await sendMessage(text);
     removeTypingIndicator(typing);
 
     const botCol = addMessage(reply, 'bot');
 
-    // Render Pokémon cards mentioned in the reply / question
-    if (pokemonInReply && pokemonInReply.length) {
-      const cards = document.createElement('div');
-      cards.className = 'poke-cards';
-      botCol.appendChild(cards);
-      for (const name of pokemonInReply) {
-        const card = await renderPokemonCard(name);
-        if (card) cards.appendChild(card);
+    // Use cards from tool result if available, otherwise fetch by name
+    const cardResults = cards && cards.length > 0
+      ? cards.map(c => ({ status: 'fulfilled', value: c }))
+      : await Promise.allSettled((pokemonInReply || []).map(name => getPokemonCard(name)));
+
+    // Render Pokémon cards from the tool result / reply
+    if (cardResults.length) {
+      const cardsWrap = document.createElement('div');
+      cardsWrap.className = 'poke-cards';
+      botCol.appendChild(cardsWrap);
+      for (const r of cardResults) {
+        if (r.status !== 'fulfilled' || !r.value) continue;
+        const card = await renderPokemonCard(r.value);
+        if (card) cardsWrap.appendChild(card);
       }
-      renderQuickActions(botCol, pokemonInReply);
+      const names = cardResults
+        .filter(r => r.status === 'fulfilled' && r.value)
+        .map(r => r.value.name);
+      if (names.length) renderQuickActions(botCol, names);
     }
 
     // Auto-open battle modal if user asked for a comparison

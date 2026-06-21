@@ -1,145 +1,177 @@
-import { chat } from './llm.js';
-import {
-  extractPokemonNames,
-  getPokemonCard,
-  getComparisonData
-} from './pokeapi.js';
+import { chatWithTools, chat } from './llm.js';
+import { getPokemonCard, getComparisonData } from './pokeapi.js';
 
+// ── System prompt ────────────────────────────────────────────
 const SYSTEM_PROMPT = `You are a Pokémon expert called "Professor AI".
 
 CRITICAL RULE: Always respond in the EXACT same language the user writes in. Spanish → Spanish. English → English. Auto-detect and match perfectly, no exceptions.
 
 You are an expert on all Pokémon: types, stats, evolutions, abilities, weaknesses and battle strategies. ONLY answer Pokémon-related questions. If asked something unrelated, kindly redirect back to Pokémon.
 
-When you receive [TOOL RESULT] data in the conversation, use those exact numbers and facts in your response. Be concise (max 2-3 short paragraphs) and enthusiastic.`;
+When you receive tool results, use those exact numbers and facts to give precise answers. Be concise (max 2-3 short paragraphs) and enthusiastic.`;
 
 const history = [{ role: 'system', content: SYSTEM_PROMPT }];
 
-// ── Comparison keywords ──────────────────────────────────────
-const COMPARE_KEYWORDS = [
-  'compara','comparar','comparación','vs','versus','contra',
-  'mejor entre','quien gana','quién gana','más fuerte','mas fuerte',
-  'ganaría','ganaria','batalla','pelea','duelo','enfrentamiento',
-  'cual es mejor','cuál es mejor','quien es más poderoso','quien es mas poderoso',
-  'quien vence','quién vence','quien puede más','quien puede mas',
-  'who wins','who would win','who is stronger','who is better',
-  'compare','comparison','battle','fight','which is better',
-  'which is stronger','who beats','can beat','stronger than','better than','beat','defeat'
-];
-
-// ── Intent detection using LLM ───────────────────────────────
-async function detectComparisonIntent(userText) {
-  const lower = userText.toLowerCase();
-  if (COMPARE_KEYWORDS.some(k => lower.includes(k))) return true;
-  try {
-    const result = await chat([
-      { role: 'system', content: 'You are a classifier. Answer ONLY "yes" or "no".' },
-      { role: 'user', content: `Does this message ask to compare/battle two Pokémon? "${userText}"` }
-    ]);
-    return result.toLowerCase().includes('yes');
-  } catch { return false; }
-}
-
-// ── TOOLS — each tool EXECUTES and returns data ──────────────
-const TOOLS = {
-  search_pokemon: {
-    description: 'Fetch real data for a Pokémon from PokéAPI',
-    shouldRun: (names) => names.length >= 1,
-    execute: async (names) => {
-      const results = [];
-      for (const name of names.slice(0, 3)) {
-        try {
-          const card = await getPokemonCard(name);
-          const statsStr = card.stats.map(s => `${s.name}:${s.value}`).join(', ');
-          const typesStr = card.types.join(', ');
-          const abilitiesStr = card.abilities.map(a => a.name).join(', ');
-          const bst = card.stats.reduce((sum, s) => sum + s.value, 0);
-          results.push(
-            `${card.name}(#${String(card.id).padStart(3,'0')}): ` +
-            `types=${typesStr}, abilities=${abilitiesStr}, ` +
-            `stats=[${statsStr}], BST=${bst}, ` +
-            `height=${card.height}m, weight=${card.weight}kg`
-          );
-        } catch { /* skip failed */ }
+// ── Tool definitions (JSON schema for Gemma 4 function calling) ──
+const TOOL_DEFINITIONS = [
+  {
+    type: 'function',
+    function: {
+      name: 'search_pokemon',
+      description: 'Get real data for one or more Pokémon from PokéAPI. Use this whenever the user asks about a specific Pokémon.',
+      parameters: {
+        type: 'object',
+        properties: {
+          names: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'List of Pokémon names to look up (lowercase, e.g. ["pikachu", "charizard"])'
+          }
+        },
+        required: ['names']
       }
-      return results.length ? results.join('\n') : null;
     }
   },
-  battle: {
-    description: 'Fetch data for two Pokémon to compare them',
-    shouldRun: (names, isComparison) => names.length >= 2 && isComparison,
-    execute: async (names) => {
-      try {
-        const { a, b } = await getComparisonData(names[0], names[1]);
-        const fmt = (p) => {
-          const stats = p.stats.map(s => `${s.stat.name}:${s.base_stat}`).join(', ');
-          const bst = p.stats.reduce((sum, s) => sum + s.base_stat, 0);
-          const types = p.types.map(t => t.type.name).join(', ');
-          return `${p.name}(#${String(p.id).padStart(3,'0')}): types=${types}, stats=[${stats}], BST=${bst}`;
-        };
-        return `${fmt(a)}\n${fmt(b)}`;
-      } catch { return null; }
+  {
+    type: 'function',
+    function: {
+      name: 'battle',
+      description: 'Compare two Pokémon and determine which is stronger. Use this when the user asks who wins, wants a battle, or asks to compare two Pokémon.',
+      parameters: {
+        type: 'object',
+        properties: {
+          pokemon_a: { type: 'string', description: 'First Pokémon name (lowercase)' },
+          pokemon_b: { type: 'string', description: 'Second Pokémon name (lowercase)' }
+        },
+        required: ['pokemon_a', 'pokemon_b']
+      }
     }
   }
-};
+];
+
+// ── Tool executors ───────────────────────────────────────────
+async function executeSearchPokemon(names) {
+  const results = [];
+  const cards = [];
+  for (const name of (names || []).slice(0, 3)) {
+    try {
+      const card = await getPokemonCard(name);
+      cards.push(card);
+      const statsStr = card.stats.map(s => `${s.name}:${s.value}`).join(', ');
+      const bst = card.stats.reduce((sum, s) => sum + s.value, 0);
+      results.push(
+        `${card.name}(#${String(card.id).padStart(3,'0')}): ` +
+        `types=${card.types.join(', ')}, ` +
+        `abilities=${card.abilities.map(a=>a.name).join(', ')}, ` +
+        `stats=[${statsStr}], BST=${bst}, ` +
+        `height=${card.height}m, weight=${card.weight}kg`
+      );
+    } catch (e) { results.push(`${name}: not found`); }
+  }
+  return { text: results.join('\n'), cards };
+}
+
+async function executeBattle(pokemonA, pokemonB) {
+  try {
+    const { a, b } = await getComparisonData(pokemonA, pokemonB);
+    const fmt = (p) => {
+      const stats = p.stats.map(s => `${s.stat.name}:${s.base_stat}`).join(', ');
+      const bst = p.stats.reduce((sum, s) => sum + s.base_stat, 0);
+      return `${p.name}(#${String(p.id).padStart(3,'0')}): types=${p.types.map(t=>t.type.name).join(', ')}, stats=[${stats}], BST=${bst}`;
+    };
+    return {
+      text: `${fmt(a)}\n${fmt(b)}`,
+      comparisonData: { a, b },
+      cards: [a, b]
+    };
+  } catch (e) {
+    return { text: `Could not fetch battle data: ${e.message}`, comparisonData: null, cards: [] };
+  }
+}
 
 // ── Main sendMessage ─────────────────────────────────────────
 export async function sendMessage(userText) {
-  // 1. Extract Pokémon names from the current message
-  const mentionedInUser = await extractPokemonNames(userText);
-
-  // 2. Detect intent
-  const isComparison = mentionedInUser.length >= 2
-    ? await detectComparisonIntent(userText)
-    : COMPARE_KEYWORDS.some(k => userText.toLowerCase().includes(k));
-
-  // 3. Determine which tool to run
-  let activeTool = null;
-  let toolData = null;
-
-  if (TOOLS.battle.shouldRun(mentionedInUser, isComparison)) {
-    activeTool = 'battle';
-    toolData = await TOOLS.battle.execute(mentionedInUser);
-  } else if (TOOLS.search_pokemon.shouldRun(mentionedInUser)) {
-    activeTool = 'search_pokemon';
-    toolData = await TOOLS.search_pokemon.execute(mentionedInUser);
-  }
-
-  // 4. Push user message
+  // Push user message
   history.push({ role: 'user', content: userText });
 
-  // 5. If tool ran and got data, inject it as a system message BEFORE the LLM responds
-  if (toolData) {
-    history.push({
-      role: 'user',
-      content: `[TOOL RESULT — ${activeTool}]\n${toolData}\n[Use the above data to answer the previous question accurately]`
-    });
-  }
-
-  // 6. Call LLM with full history
-  let reply;
-  try {
-    reply = await chat(history);
-  } catch (err) {
-    console.error('LLM error', err);
-    reply = 'Ups / Oops — there was a problem. Try again?';
-  }
-  history.push({ role: 'assistant', content: reply });
-
-  // 7. Extract Pokémon names from reply for card rendering
-  const mentionedInReply = await extractPokemonNames(reply);
-  const allMentioned = [...new Set([...mentionedInUser, ...mentionedInReply])].slice(0, 4);
-
-  // 8. Fetch comparison data for battle modal (UI layer)
+  let pokemonCards = [];
   let comparison = null;
-  if ((activeTool === 'battle' || isComparison) && mentionedInUser.length >= 2) {
-    try {
-      comparison = await getComparisonData(mentionedInUser[0], mentionedInUser[1]);
-    } catch { comparison = null; }
-  }
+  let activeTool = null;
 
-  return { reply, pokemonInReply: allMentioned, comparison, tool: activeTool };
+  try {
+    // First LLM call — with tools so model can decide what to call
+    const assistantMsg = await chatWithTools([...history], TOOL_DEFINITIONS);
+
+    // Check if model wants to call a tool
+    if (assistantMsg.tool_calls && assistantMsg.tool_calls.length > 0) {
+      // Push assistant's tool call decision into history
+      history.push(assistantMsg);
+
+      // Execute each tool call
+      for (const toolCall of assistantMsg.tool_calls) {
+        const fnName = toolCall.function?.name || toolCall.name;
+        const fnArgs = typeof toolCall.function?.arguments === 'string'
+          ? JSON.parse(toolCall.function.arguments)
+          : (toolCall.function?.arguments || toolCall.arguments || {});
+
+        let toolResult = '';
+        activeTool = fnName;
+
+        if (fnName === 'search_pokemon') {
+          const result = await executeSearchPokemon(fnArgs.names || []);
+          toolResult = result.text;
+          pokemonCards = result.cards;
+        } else if (fnName === 'battle') {
+          const result = await executeBattle(fnArgs.pokemon_a, fnArgs.pokemon_b);
+          toolResult = result.text;
+          comparison = result.comparisonData;
+          pokemonCards = result.cards;
+        }
+
+        // Inject tool result into history
+        history.push({
+          role: 'tool',
+          tool_call_id: toolCall.id || fnName,
+          content: toolResult
+        });
+      }
+
+      // Second LLM call — now model has tool results and generates final reply
+      const finalMsg = await chatWithTools([...history], null); // no tools on second call
+      const reply = typeof finalMsg === 'string' ? finalMsg : (finalMsg?.content || '');
+      history.push({ role: 'assistant', content: reply });
+
+      return {
+        reply,
+        pokemonInReply: pokemonCards.map(c => c.name || c.name),
+        comparison,
+        tool: activeTool,
+        cards: pokemonCards
+      };
+
+    } else {
+      // Model answered directly without tool call
+      const reply = typeof assistantMsg === 'string'
+        ? assistantMsg
+        : (assistantMsg?.content || '');
+      history.push({ role: 'assistant', content: reply });
+
+      return {
+        reply,
+        pokemonInReply: [],
+        comparison: null,
+        tool: null,
+        cards: []
+      };
+    }
+
+  } catch (err) {
+    console.error('sendMessage error:', err);
+    const fallback = 'Ups / Oops — there was a problem. Try again?';
+    history.push({ role: 'assistant', content: fallback });
+    return { reply: fallback, pokemonInReply: [], comparison: null, tool: null, cards: [] };
+  }
 }
 
-export { TOOLS };
+export { TOOL_DEFINITIONS as TOOLS };
 export function clearHistory() { history.splice(1); }
