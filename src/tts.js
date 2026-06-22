@@ -7,9 +7,22 @@ let tts = null;
 let loadingPromise = null;
 const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
 
-// Spanish voices exist in kokoro: ef_dora (female ES), em_alex (male ES)
-const VOICE_ES = 'ef_dora';
+// NOTE: the Kokoro-82M-v1.0-ONNX build bundled by kokoro-js only ships ENGLISH
+// voices (af_/am_ American, bf_/bm_ British). Spanish voices (ef_dora) are NOT
+// included in this model, so we use a clear English voice that reads both EN and
+// ES text intelligibly. af_heart = highest-quality female voice.
+const VOICE_ES = 'af_heart';
 const VOICE_EN = 'af_heart';
+const DEFAULT_VOICE = 'af_heart';
+
+// Voices that actually exist in this model build
+const VALID_VOICES = new Set([
+  'af_heart','af_alloy','af_aoede','af_bella','af_jessica','af_kore','af_nicole',
+  'af_nova','af_river','af_sarah','af_sky','am_adam','am_echo','am_eric','am_fenrir',
+  'am_liam','am_michael','am_onyx','am_puck','am_santa','bf_emma','bf_isabella',
+  'bm_george','bm_lewis','bf_alice','bf_lily','bm_daniel','bm_fable'
+]);
+function safeVoice(v) { return VALID_VOICES.has(v) ? v : DEFAULT_VOICE; }
 
 // ── Shared AudioContext (must be unlocked by a user gesture) ──
 let audioCtx = null;
@@ -92,7 +105,7 @@ export async function speak(text, voice) {
 
   if (!clean) return null;
 
-  const chosen = voice || voiceForLang(clean);
+  const chosen = safeVoice(voice || voiceForLang(clean));
   let audio;
   try {
     audio = await tts.generate(clean, { voice: chosen });
@@ -114,7 +127,7 @@ export async function speakAndPlay(text, voice) {
     .replace(/\s+/g, ' ')
     .trim();
   if (!clean) return;
-  const chosen = voice || voiceForLang(clean);
+  const chosen = safeVoice(voice || voiceForLang(clean));
   let audio;
   try { audio = await tts.generate(clean, { voice: chosen }); }
   catch { audio = await tts.generate(clean, { voice: VOICE_EN }); }
@@ -131,7 +144,7 @@ export function createSpeechStream(voice) {
   let playing = false;
   let stopped = false;
   let streamDone = false;
-  const chosen = voice || VOICE_ES;
+  const chosen = safeVoice(voice || DEFAULT_VOICE);
 
   // Play queued RawAudio one after another via Web Audio
   async function playNext() {
