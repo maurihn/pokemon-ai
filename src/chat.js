@@ -1,170 +1,156 @@
-import { chatWithTools, chat } from './llm.js';
+import { chat } from './llm.js';
 import { getPokemonCard, getComparisonData } from './pokeapi.js';
 
-// ── System prompt ────────────────────────────────────────────
+// ── System prompt with tool instructions ─────────────────────
 const SYSTEM_PROMPT = `You are a Pokémon expert called "Professor AI".
 
-CRITICAL RULE: Always respond in the EXACT same language the user writes in. Spanish → Spanish. English → English. Auto-detect and match perfectly, no exceptions.
+LANGUAGE RULE: Always respond in the EXACT same language the user writes in. Spanish → Spanish. English → English. Auto-detect and match, no exceptions.
 
-You are an expert on all Pokémon: types, stats, evolutions, abilities, weaknesses and battle strategies. ONLY answer Pokémon-related questions. If asked something unrelated, kindly redirect back to Pokémon.
+You have access to these tools:
+1. search_pokemon — get real data (types, stats, abilities) for one or more Pokémon
+2. battle — compare two Pokémon to determine which is stronger
 
-When you receive tool results, use those exact numbers and facts to give precise answers. Be concise (max 2-3 short paragraphs) and enthusiastic.`;
+WHEN TO USE TOOLS:
+- If the user asks about a specific Pokémon you don't have data for yet, call search_pokemon.
+- If the user wants to compare or battle two Pokémon, call battle.
+- If you already have the needed data in the conversation, just answer directly WITHOUT calling a tool.
+- For greetings or general questions, just answer directly.
+
+HOW TO CALL A TOOL: Output ONLY this exact format on its own, nothing else:
+[[TOOL:search_pokemon|pikachu]]
+or for multiple pokemon:
+[[TOOL:search_pokemon|pikachu,charizard]]
+or for battle:
+[[TOOL:battle|pikachu|charizard]]
+
+After you receive [TOOL RESULT], use those exact numbers to give a concise (2-3 paragraph) enthusiastic answer in the user's language. Never show the tool call format to the user in your final answer.`;
 
 const history = [{ role: 'system', content: SYSTEM_PROMPT }];
 
-// ── Tool definitions (JSON schema for Gemma 4 function calling) ──
-const TOOL_DEFINITIONS = [
-  {
-    type: 'function',
-    function: {
-      name: 'search_pokemon',
-      description: 'Get real data for one or more Pokémon from PokéAPI. Use this whenever the user asks about a specific Pokémon.',
-      parameters: {
-        type: 'object',
-        properties: {
-          names: {
-            type: 'array',
-            items: { type: 'string' },
-            description: 'List of Pokémon names to look up (lowercase, e.g. ["pikachu", "charizard"])'
-          }
-        },
-        required: ['names']
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'battle',
-      description: 'Compare two Pokémon and determine which is stronger. Use this when the user asks who wins, wants a battle, or asks to compare two Pokémon.',
-      parameters: {
-        type: 'object',
-        properties: {
-          pokemon_a: { type: 'string', description: 'First Pokémon name (lowercase)' },
-          pokemon_b: { type: 'string', description: 'Second Pokémon name (lowercase)' }
-        },
-        required: ['pokemon_a', 'pokemon_b']
-      }
-    }
+// ── Parse tool calls from model output ───────────────────────
+function parseToolCall(text) {
+  if (!text) return null;
+  // Primary format: [[TOOL:name|arg1|arg2]]
+  let m = text.match(/\[\[TOOL:\s*(\w+)\s*((?:\|[^\]]*)*)\]\]/i);
+  if (m) {
+    const name = m[1].toLowerCase();
+    const args = m[2].split('|').filter(s => s.trim().length > 0).map(s => s.trim());
+    return { name, args };
   }
-];
+  // Fallback: Gemma native format call:name{...} or <|tool_call>...
+  m = text.match(/call:\s*(\w+)\s*\{([^}]*)\}/i);
+  if (m) {
+    const name = m[1].toLowerCase();
+    // extract values from {names:[pikachu]} or {pokemon_a:pikachu, pokemon_b:charizard}
+    const inner = m[2];
+    const values = [];
+    // grab anything that looks like a pokemon name (word chars, hyphens)
+    const nameMatches = inner.match(/[a-z][a-z0-9-]+/gi) || [];
+    // filter out the keys like 'names', 'pokemon_a', etc
+    const keys = ['names', 'name', 'pokemon_a', 'pokemon_b', 'pokemon', 'a', 'b'];
+    for (const nm of nameMatches) {
+      if (!keys.includes(nm.toLowerCase())) values.push(nm.toLowerCase());
+    }
+    return { name, args: values };
+  }
+  return null;
+}
+
+// ── Clean tool-call syntax out of any text shown to user ─────
+function stripToolSyntax(text) {
+  if (!text) return '';
+  return text
+    .replace(/\[\[TOOL:[^\]]*\]\]/gi, '')
+    .replace(/<\|?tool_call\|?>[\s\S]*?<\/?tool_call\|?>/gi, '')
+    .replace(/call:\s*\w+\s*\{[^}]*\}/gi, '')
+    .replace(/<\|?"\|?>/g, '')
+    .trim();
+}
 
 // ── Tool executors ───────────────────────────────────────────
-async function executeSearchPokemon(names) {
-  const results = [];
+async function execSearch(names) {
   const cards = [];
-  for (const name of (names || []).slice(0, 3)) {
+  const lines = [];
+  for (const name of names.slice(0, 3)) {
     try {
       const card = await getPokemonCard(name);
       cards.push(card);
       const statsStr = card.stats.map(s => `${s.name}:${s.value}`).join(', ');
       const bst = card.stats.reduce((sum, s) => sum + s.value, 0);
-      results.push(
-        `${card.name}(#${String(card.id).padStart(3,'0')}): ` +
-        `types=${card.types.join(', ')}, ` +
-        `abilities=${card.abilities.map(a=>a.name).join(', ')}, ` +
-        `stats=[${statsStr}], BST=${bst}, ` +
-        `height=${card.height}m, weight=${card.weight}kg`
-      );
-    } catch (e) { results.push(`${name}: not found`); }
+      lines.push(`${card.name}(#${String(card.id).padStart(3,'0')}): types=${card.types.join(', ')}, abilities=${card.abilities.map(a=>a.name).join(', ')}, stats=[${statsStr}], BST=${bst}, height=${card.height}m, weight=${card.weight}kg`);
+    } catch { lines.push(`${name}: not found`); }
   }
-  return { text: results.join('\n'), cards };
+  return { text: lines.join('\n') || 'No data found', cards };
 }
 
-async function executeBattle(pokemonA, pokemonB) {
+async function execBattle(a, b) {
   try {
-    const { a, b } = await getComparisonData(pokemonA, pokemonB);
+    const { a: pa, b: pb } = await getComparisonData(a, b);
     const fmt = (p) => {
       const stats = p.stats.map(s => `${s.stat.name}:${s.base_stat}`).join(', ');
       const bst = p.stats.reduce((sum, s) => sum + s.base_stat, 0);
       return `${p.name}(#${String(p.id).padStart(3,'0')}): types=${p.types.map(t=>t.type.name).join(', ')}, stats=[${stats}], BST=${bst}`;
     };
-    return {
-      text: `${fmt(a)}\n${fmt(b)}`,
-      comparisonData: { a, b },
-      cards: [a, b]
-    };
+    return { text: `${fmt(pa)}\n${fmt(pb)}`, comparison: { a: pa, b: pb }, cards: [pa, pb] };
   } catch (e) {
-    return { text: `Could not fetch battle data: ${e.message}`, comparisonData: null, cards: [] };
+    return { text: 'Battle data unavailable', comparison: null, cards: [] };
   }
 }
 
 // ── Main sendMessage ─────────────────────────────────────────
 export async function sendMessage(userText) {
-  // Push user message
   history.push({ role: 'user', content: userText });
 
-  let pokemonCards = [];
+  let cards = [];
   let comparison = null;
   let activeTool = null;
 
   try {
-    // First LLM call — with tools so model can decide what to call
-    const assistantMsg = await chatWithTools([...history], TOOL_DEFINITIONS);
+    // First call — model may emit a tool call
+    let raw = await chat([...history]);
+    const toolCall = parseToolCall(raw);
 
-    // Check if model wants to call a tool
-    if (assistantMsg.tool_calls && assistantMsg.tool_calls.length > 0) {
-      // Push assistant's tool call decision into history
-      history.push(assistantMsg);
+    if (toolCall) {
+      activeTool = toolCall.name;
+      let toolResultText = '';
 
-      // Execute each tool call
-      for (const toolCall of assistantMsg.tool_calls) {
-        const fnName = toolCall.function?.name || toolCall.name;
-        const fnArgs = typeof toolCall.function?.arguments === 'string'
-          ? JSON.parse(toolCall.function.arguments)
-          : (toolCall.function?.arguments || toolCall.arguments || {});
-
-        let toolResult = '';
-        activeTool = fnName;
-
-        if (fnName === 'search_pokemon') {
-          const result = await executeSearchPokemon(fnArgs.names || []);
-          toolResult = result.text;
-          pokemonCards = result.cards;
-        } else if (fnName === 'battle') {
-          const result = await executeBattle(fnArgs.pokemon_a, fnArgs.pokemon_b);
-          toolResult = result.text;
-          comparison = result.comparisonData;
-          pokemonCards = result.cards;
+      if (toolCall.name === 'search_pokemon') {
+        // args may be comma-separated in first slot or multiple slots
+        let names = toolCall.args;
+        if (names.length === 1 && names[0].includes(',')) {
+          names = names[0].split(',').map(s => s.trim());
         }
-
-        // Inject tool result into history
-        history.push({
-          role: 'tool',
-          tool_call_id: toolCall.id || fnName,
-          content: toolResult
-        });
+        const r = await execSearch(names);
+        toolResultText = r.text;
+        cards = r.cards;
+      } else if (toolCall.name === 'battle') {
+        let a = toolCall.args[0];
+        let b = toolCall.args[1];
+        if (!b && a && a.includes(',')) {
+          [a, b] = a.split(',').map(s => s.trim());
+        }
+        const r = await execBattle(a, b);
+        toolResultText = r.text;
+        comparison = r.comparison;
+        cards = r.cards;
       }
 
-      // Second LLM call — now model has tool results and generates final reply
-      const finalMsg = await chatWithTools([...history], null); // no tools on second call
-      const reply = typeof finalMsg === 'string' ? finalMsg : (finalMsg?.content || '');
+      // Record the model's tool-call turn (cleaned) + tool result
+      history.push({ role: 'assistant', content: raw });
+      history.push({ role: 'user', content: `[TOOL RESULT]\n${toolResultText}\n[Now answer the user's question using this data, in their language. Do not mention the tool.]` });
+
+      // Second call — final answer
+      const finalRaw = await chat([...history]);
+      const reply = stripToolSyntax(finalRaw) || finalRaw;
       history.push({ role: 'assistant', content: reply });
 
-      return {
-        reply,
-        pokemonInReply: pokemonCards.map(c => c.name || c.name),
-        comparison,
-        tool: activeTool,
-        cards: pokemonCards
-      };
-
+      return { reply, pokemonInReply: cards.map(c => c.name), comparison, tool: activeTool, cards };
     } else {
-      // Model answered directly without tool call
-      const reply = typeof assistantMsg === 'string'
-        ? assistantMsg
-        : (assistantMsg?.content || '');
+      // No tool — direct answer
+      const reply = stripToolSyntax(raw) || raw;
       history.push({ role: 'assistant', content: reply });
-
-      return {
-        reply,
-        pokemonInReply: [],
-        comparison: null,
-        tool: null,
-        cards: []
-      };
+      return { reply, pokemonInReply: [], comparison: null, tool: null, cards: [] };
     }
-
   } catch (err) {
     console.error('sendMessage error:', err);
     const fallback = 'Ups / Oops — there was a problem. Try again?';
@@ -173,5 +159,4 @@ export async function sendMessage(userText) {
   }
 }
 
-export { TOOL_DEFINITIONS as TOOLS };
 export function clearHistory() { history.splice(1); }
