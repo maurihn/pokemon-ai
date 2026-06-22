@@ -4,6 +4,7 @@
 
 import { initLLM } from './llm.js';
 import { sendMessage, clearHistory } from './chat.js';
+import { initTTS, speak, ttsReady, voiceForLang } from './tts.js';
 import {
   TYPE_COLORS, STAT_LABELS, STAT_LABELS_ES, MAX_STAT,
   capitalize, pad3, officialArt, fallbackSprite, hexToRgba,
@@ -20,6 +21,8 @@ const userInput       = document.getElementById('userInput');
 const sendBtn         = document.getElementById('sendBtn');
 const voiceBtn        = document.getElementById('voiceBtn');
 const voiceStatus     = document.getElementById('voiceStatus');
+const liveToggle      = document.getElementById('liveToggle');
+const liveStatus      = document.getElementById('liveStatus');
 
 const detailBackdrop  = document.getElementById('detailBackdrop');
 const detailModal     = document.getElementById('detailModal');
@@ -71,6 +74,13 @@ function addMessage(text, role) {
   } else {
     row.appendChild(avatar);
     row.appendChild(bubble);
+    // 🔊 speak button on bot messages
+    const speakBtn = document.createElement('button');
+    speakBtn.className = 'speak-btn';
+    speakBtn.title = 'Escuchar';
+    speakBtn.textContent = '🔊';
+    speakBtn.addEventListener('click', () => playTTS(text, speakBtn));
+    row.appendChild(speakBtn);
   }
   col.appendChild(row);
   messagesEl.appendChild(col);
@@ -682,6 +692,80 @@ function closeBattleModal() {
 }
 
 // ===========================================================
+// TTS + Live mode
+// ===========================================================
+let liveMode = false;
+let currentAudio = null;
+
+// Play a bot message via Kokoro TTS. `btn` is the optional 🔊 button to animate.
+async function playTTS(text, btn) {
+  try {
+    // stop anything currently playing
+    if (currentAudio) { currentAudio.pause(); currentAudio = null; }
+
+    if (!ttsReady()) {
+      if (btn) btn.textContent = '⏳';
+      liveStatus.textContent = '🔊 Cargando voz (una sola vez)...';
+      await initTTS((p) => {
+        if (p && p.status === 'progress' && p.total) {
+          const pct = ((p.loaded / p.total) * 100).toFixed(0);
+          liveStatus.textContent = `🔊 Cargando voz... ${pct}%`;
+        }
+      });
+      liveStatus.textContent = '';
+    }
+
+    if (btn) btn.textContent = '🔈';
+    const voice = voiceForLang(text);
+    const url = await speak(text, voice);
+    if (btn) btn.textContent = '🔊';
+    if (!url) return;
+
+    const audio = new Audio(url);
+    currentAudio = audio;
+    return await new Promise((resolve) => {
+      audio.onended = () => { currentAudio = null; URL.revokeObjectURL(url); resolve(); };
+      audio.onerror = () => { currentAudio = null; resolve(); };
+      audio.play().catch(() => resolve());
+    });
+  } catch (err) {
+    console.error('TTS error', err);
+    if (btn) btn.textContent = '🔊';
+    liveStatus.textContent = '';
+  }
+}
+
+async function toggleLiveMode() {
+  liveMode = !liveMode;
+  if (liveMode) {
+    liveToggle.classList.add('active');
+    liveToggle.textContent = '🟢 Live activo';
+    liveStatus.textContent = '🔊 Preparando voz...';
+    try {
+      await initTTS((p) => {
+        if (p && p.status === 'progress' && p.total) {
+          const pct = ((p.loaded / p.total) * 100).toFixed(0);
+          liveStatus.textContent = `🔊 Cargando voz... ${pct}%`;
+        }
+      });
+      liveStatus.textContent = '🟢 Modo Live listo — habla o escribe';
+      setTimeout(() => { if (liveMode) liveStatus.textContent = ''; }, 2500);
+    } catch (err) {
+      console.error(err);
+      liveStatus.textContent = '⚠️ No se pudo cargar la voz';
+      liveMode = false;
+      liveToggle.classList.remove('active');
+      liveToggle.textContent = '🔴 Modo Live';
+    }
+  } else {
+    liveToggle.classList.remove('active');
+    liveToggle.textContent = '🔴 Modo Live';
+    liveStatus.textContent = '';
+    if (currentAudio) { currentAudio.pause(); currentAudio = null; }
+  }
+}
+
+// ===========================================================
 // Send flow
 // ===========================================================
 let sending = false;
@@ -726,6 +810,17 @@ async function handleSend() {
     // Auto-open battle modal if user asked for a comparison
     if (comparison && comparison.a && comparison.b) {
       setTimeout(() => openBattleModal(comparison.a, comparison.b), 350);
+    }
+
+    // Live mode: speak the reply, then re-open the mic for continuous conversation
+    if (liveMode && reply) {
+      liveStatus.textContent = '🔊 Hablando...';
+      await playTTS(reply);
+      liveStatus.textContent = '';
+      if (liveMode && recognition && !recording) {
+        liveStatus.textContent = '🎙️ Tu turno...';
+        try { recognition.start(); } catch { /* already running */ }
+      }
     }
   } catch (err) {
     console.error(err);
@@ -831,6 +926,8 @@ async function boot() {
   });
 
   setupVoice();
+
+  if (liveToggle) liveToggle.addEventListener('click', toggleLiveMode);
 
   // Init LLM
   try {

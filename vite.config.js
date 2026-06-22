@@ -2,7 +2,7 @@ import { defineConfig } from 'vite'
 
 export default defineConfig({
   optimizeDeps: {
-    exclude: ['@huggingface/transformers']
+    exclude: ['@huggingface/transformers', 'kokoro-js']
   },
   build: {
     outDir: 'dist',
