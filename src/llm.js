@@ -8,22 +8,65 @@ let generator = null;
 
 export async function initLLM(onProgress) {
   onProgress('Cargando Gemma 4...', 0);
+
+  // Aggregate download progress across all model files ourselves, because
+  // Transformers.js v4 emits per-file 'progress' events (status 'progress',
+  // with loaded/total bytes), not a single 'downloading' event.
+  const files = {}; // file -> { loaded, total }
+
+  const report = () => {
+    let loaded = 0, total = 0;
+    for (const f of Object.values(files)) {
+      loaded += f.loaded || 0;
+      total  += f.total  || 0;
+    }
+    if (total > 0) {
+      const pct = Math.min(0.99, loaded / total);
+      const mb = (loaded / 1048576).toFixed(0);
+      const tot = (total / 1048576).toFixed(0);
+      onProgress(`Descargando modelo... ${mb} / ${tot} MB`, pct);
+    }
+  };
+
   generator = await pipeline('text-generation', MODEL_ID, {
     device: 'webgpu',
     dtype: 'q4',
-    progress_callback: (progress) => {
-      if (progress.status === 'downloading') {
-        const pct = progress.total ? progress.loaded / progress.total : 0;
-        const mb = progress.loaded ? (progress.loaded / 1024 / 1024).toFixed(1) : '?';
-        const total = progress.total ? (progress.total / 1024 / 1024).toFixed(1) : '?';
-        onProgress(`Descargando modelo... ${mb}MB / ${total}MB`, pct);
-      } else if (progress.status === 'loading') {
-        onProgress('Cargando modelo...', 0.9);
-      } else if (progress.status === 'ready') {
-        onProgress('¡Modelo listo!', 1);
+    progress_callback: (p) => {
+      switch (p.status) {
+        case 'initiate':
+        case 'download':
+          if (p.file && !files[p.file]) files[p.file] = { loaded: 0, total: 0 };
+          break;
+        case 'progress':
+          if (p.file) {
+            files[p.file] = { loaded: p.loaded || 0, total: p.total || 0 };
+            report();
+          }
+          break;
+        case 'progress_total':
+          // aggregate event (when available) — use directly
+          if (p.total) {
+            const pct = Math.min(0.99, (p.loaded || 0) / p.total);
+            const mb = ((p.loaded || 0) / 1048576).toFixed(0);
+            const tot = (p.total / 1048576).toFixed(0);
+            onProgress(`Descargando modelo... ${mb} / ${tot} MB`, pct);
+          }
+          break;
+        case 'done':
+          if (p.file && files[p.file]) files[p.file].loaded = files[p.file].total;
+          report();
+          break;
+        case 'ready':
+          onProgress('¡Modelo listo!', 1);
+          break;
+        default:
+          break;
       }
     }
   });
+
+  // Compiling/warming up the WebGPU kernels happens after download — show near-complete
+  onProgress('Preparando modelo en WebGPU...', 0.99);
   return generator;
 }
 
