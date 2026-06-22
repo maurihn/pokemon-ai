@@ -26,6 +26,9 @@ function safeVoice(v) { return VALID_VOICES.has(v) ? v : DEFAULT_VOICE; }
 
 // ── Shared AudioContext (must be unlocked by a user gesture) ──
 let audioCtx = null;
+let activeSource = null;   // currently-playing BufferSource
+let speakToken = 0;        // bumped to cancel in-flight speak() calls
+
 export function unlockAudio() {
   if (!audioCtx) {
     const AC = window.AudioContext || window.webkitAudioContext;
@@ -35,6 +38,19 @@ export function unlockAudio() {
     audioCtx.resume().catch(() => {});
   }
   return audioCtx;
+}
+
+// Immediately stop any speech (current audio + cancel pending generation)
+export function stopSpeaking() {
+  speakToken++;                 // invalidates in-flight speakAndPlay calls
+  if (activeSource) {
+    try { activeSource.onended = null; activeSource.stop(); } catch {}
+    activeSource = null;
+  }
+}
+
+export function isSpeaking() {
+  return activeSource !== null;
 }
 
 // Play a RawAudio (Float32 PCM) via Web Audio. Returns a promise that
@@ -68,7 +84,8 @@ function playRawAudio(raw) {
       const src = ctx.createBufferSource();
       src.buffer = buffer;
       src.connect(ctx.destination);
-      src.onended = () => resolve();
+      activeSource = src;
+      src.onended = () => { if (activeSource === src) activeSource = null; resolve(); };
       src.start();
     } catch (e) {
       console.error('playRawAudio error', e);
@@ -135,20 +152,37 @@ export async function speak(text, voice) {
 }
 
 // Generate + play via Web Audio (reliable, no autoplay block). Resolves when done.
+// Speak text sentence-by-sentence so playback starts fast and can be
+// interrupted with stopSpeaking() at any point.
 export async function speakAndPlay(text, voice) {
   if (!tts) await initTTS();
   if (!text || !text.trim()) return;
+
+  // any previous speech is cancelled by the caller via stopSpeaking()
+  const myToken = ++speakToken;
+
   const clean = text
     .replace(/[\u{1F000}-\u{1FFFF}\u{2600}-\u{27BF}\u{2190}-\u{21FF}\u{2B00}-\u{2BFF}]/gu, '')
     .replace(/[#*_`>~|]/g, '')
     .replace(/\s+/g, ' ')
     .trim();
   if (!clean) return;
+
   const chosen = safeVoice(voice || voiceForLang(clean));
-  let audio;
-  try { audio = await tts.generate(clean, { voice: chosen }); }
-  catch { audio = await tts.generate(clean, { voice: VOICE_EN }); }
-  if (audio) await playRawAudio(audio);
+
+  // Split into sentences for low-latency start
+  const sentences = clean.match(/[^.!?]+[.!?]*/g) || [clean];
+
+  for (const sentence of sentences) {
+    if (myToken !== speakToken) return;  // cancelled
+    const s = sentence.trim();
+    if (!s) continue;
+    let audio;
+    try { audio = await tts.generate(s, { voice: chosen }); }
+    catch { audio = await tts.generate(s, { voice: VOICE_EN }); }
+    if (myToken !== speakToken) return;  // cancelled while generating
+    if (audio) await playRawAudio(audio);
+  }
 }
 
 // ===========================================================

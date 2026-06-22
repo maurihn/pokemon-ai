@@ -4,7 +4,7 @@
 
 import { initLLM } from './llm.js';
 import { sendMessage, clearHistory } from './chat.js';
-import { initTTS, speakAndPlay, ttsReady, voiceForLang, createSpeechStream, unlockAudio } from './tts.js';
+import { initTTS, speakAndPlay, ttsReady, voiceForLang, unlockAudio, stopSpeaking, isSpeaking } from './tts.js';
 import {
   TYPE_COLORS, STAT_LABELS, STAT_LABELS_ES, MAX_STAT,
   capitalize, pad3, officialArt, fallbackSprite, hexToRgba,
@@ -21,8 +21,6 @@ const userInput       = document.getElementById('userInput');
 const sendBtn         = document.getElementById('sendBtn');
 const voiceBtn        = document.getElementById('voiceBtn');
 const voiceStatus     = document.getElementById('voiceStatus');
-const liveToggle      = document.getElementById('liveToggle');
-const liveStatus      = document.getElementById('liveStatus');
 
 const detailBackdrop  = document.getElementById('detailBackdrop');
 const detailModal     = document.getElementById('detailModal');
@@ -74,12 +72,12 @@ function addMessage(text, role) {
   } else {
     row.appendChild(avatar);
     row.appendChild(bubble);
-    // 🔊 speak button on bot messages
+    // 🔊 speak / ⏹ stop toggle button on bot messages
     const speakBtn = document.createElement('button');
     speakBtn.className = 'speak-btn';
     speakBtn.title = 'Escuchar';
     speakBtn.textContent = '🔊';
-    speakBtn.addEventListener('click', () => playTTS(bubble.textContent || text, speakBtn));
+    speakBtn.addEventListener('click', () => onSpeakBtn(speakBtn, bubble.textContent || text));
     row.appendChild(speakBtn);
   }
   col.appendChild(row);
@@ -692,76 +690,57 @@ function closeBattleModal() {
 }
 
 // ===========================================================
-// TTS + Live mode
+// TTS — read a bot message aloud (play / stop toggle per message)
 // ===========================================================
-let liveMode = false;
-let currentAudio = null;
+let activeSpeakBtn = null;
 
-// Play a bot message via Kokoro TTS. `btn` is the optional 🔊 button to animate.
-async function playTTS(text, btn) {
-  try {
-    // stop anything currently playing
-    if (currentAudio) { currentAudio.pause(); currentAudio = null; }
-
-    if (!ttsReady()) {
-      if (btn) btn.textContent = '⏳';
-      liveStatus.textContent = '🔊 Cargando voz (una sola vez)...';
-      await initTTS((p) => {
-        if (p && p.status === 'progress' && p.total) {
-          const pct = ((p.loaded / p.total) * 100).toFixed(0);
-          liveStatus.textContent = `🔊 Cargando voz... ${pct}%`;
-        }
-      });
-      liveStatus.textContent = '';
-    }
-
-    if (btn) btn.textContent = '🔈';
-    unlockAudio(); // ensure AudioContext is running (called from a click)
-    const voice = voiceForLang(text);
-    await speakAndPlay(text, voice);
-    if (btn) btn.textContent = '🔊';
-  } catch (err) {
-    console.error('TTS error', err);
-    if (btn) btn.textContent = '🔊';
-    liveStatus.textContent = '';
-  }
+// Reset a speak button back to the 🔊 idle state
+function resetSpeakBtn(btn) {
+  if (!btn) return;
+  btn.textContent = '🔊';
+  btn.classList.remove('speaking');
+  if (activeSpeakBtn === btn) activeSpeakBtn = null;
 }
 
-async function toggleLiveMode() {
-  liveMode = !liveMode;
-  if (liveMode) {
-    unlockAudio(); // unlock AudioContext within this user gesture (click)
-    liveToggle.classList.add('active');
-    liveToggle.textContent = '🟢 Live activo';
-    liveStatus.textContent = '🔊 Preparando voz...';
-    try {
+// Click handler for a message's speak button. Toggles play / stop.
+async function onSpeakBtn(btn, text) {
+  // If THIS button is already speaking → stop
+  if (activeSpeakBtn === btn) {
+    stopSpeaking();
+    resetSpeakBtn(btn);
+    return;
+  }
+  // If ANOTHER message is speaking → stop it first
+  if (activeSpeakBtn) {
+    stopSpeaking();
+    resetSpeakBtn(activeSpeakBtn);
+  }
+
+  try {
+    unlockAudio(); // user gesture — unlock AudioContext
+
+    if (!ttsReady()) {
+      btn.textContent = '⏳';
       await initTTS((p) => {
         if (p && p.status === 'progress' && p.total) {
           const pct = ((p.loaded / p.total) * 100).toFixed(0);
-          liveStatus.textContent = `🔊 Cargando voz... ${pct}%`;
+          btn.title = `Cargando voz... ${pct}%`;
         }
       });
-      // Start listening immediately — this triggers the mic permission prompt
-      if (recognition && !recording) {
-        liveStatus.textContent = '🎙️ Habla ahora...';
-        try { recognition.start(); }
-        catch { /* already running */ }
-      } else if (!recognition) {
-        liveStatus.textContent = '⚠️ Tu navegador no soporta voz';
-      }
-    } catch (err) {
-      console.error(err);
-      liveStatus.textContent = '⚠️ No se pudo cargar la voz';
-      liveMode = false;
-      liveToggle.classList.remove('active');
-      liveToggle.textContent = '🔴 Modo Live';
+      btn.title = 'Detener';
     }
-  } else {
-    liveToggle.classList.remove('active');
-    liveToggle.textContent = '🔴 Modo Live';
-    liveStatus.textContent = '';
-    if (currentAudio) { currentAudio.pause(); currentAudio = null; }
-    if (recognition && recording) { try { recognition.stop(); } catch {} }
+
+    activeSpeakBtn = btn;
+    btn.textContent = '⏹';
+    btn.classList.add('speaking');
+
+    await speakAndPlay(text, voiceForLang(text));
+
+    // finished naturally
+    resetSpeakBtn(btn);
+  } catch (err) {
+    console.error('TTS error', err);
+    resetSpeakBtn(btn);
   }
 }
 
@@ -803,55 +782,6 @@ async function handleSend() {
   const typing = addTypingIndicator();
 
   try {
-    // ── LIVE MODE: stream tokens → speak sentence-by-sentence + type live ──
-    if (liveMode && ttsReady()) {
-      let botCol = null;
-      let bubble = null;
-      let typingRemoved = false;
-      let liveText = '';
-      const voice = voiceForLang(text); // best guess; refined when first chunk arrives
-      let speech = null;
-
-      const onChunk = (chunk) => {
-        if (!typingRemoved) { removeTypingIndicator(typing); typingRemoved = true; }
-        if (!botCol) {
-          botCol = addMessage('', 'bot');
-          bubble = botCol.querySelector('.bubble');
-          // start the streaming voice once we know roughly the language
-          speech = createSpeechStream(voiceForLang(chunk) || voice);
-          liveStatus.textContent = '🔊 Hablando...';
-        }
-        liveText += chunk;
-        if (bubble) bubble.textContent = liveText;
-        messagesEl.scrollTop = messagesEl.scrollHeight;
-        if (speech) speech.push(chunk);
-      };
-
-      const { reply, pokemonInReply, comparison, cards } =
-        await sendMessage(text, { onChunk });
-
-      if (!typingRemoved) removeTypingIndicator(typing);
-      if (!botCol) { botCol = addMessage(reply, 'bot'); }
-      else if (bubble) bubble.textContent = reply; // ensure final clean text
-
-      if (speech) { speech.done(); }
-
-      await renderCardsAndActions(botCol, cards, pokemonInReply);
-      if (comparison && comparison.a && comparison.b) {
-        setTimeout(() => openBattleModal(comparison.a, comparison.b), 350);
-      }
-
-      // wait for the spoken audio to finish, then hand the mic back
-      if (speech) await speech.waitUntilDone();
-      liveStatus.textContent = '';
-      if (liveMode && recognition && !recording) {
-        liveStatus.textContent = '🎙️ Tu turno...';
-        try { recognition.start(); } catch { /* already running */ }
-      }
-      return;
-    }
-
-    // ── NORMAL MODE (no streaming) ──
     const { reply, pokemonInReply, comparison, cards } = await sendMessage(text);
     removeTypingIndicator(typing);
 
@@ -860,17 +790,6 @@ async function handleSend() {
 
     if (comparison && comparison.a && comparison.b) {
       setTimeout(() => openBattleModal(comparison.a, comparison.b), 350);
-    }
-
-    // Live mode without TTS preloaded → speak after the fact (fallback)
-    if (liveMode && reply) {
-      liveStatus.textContent = '🔊 Hablando...';
-      await playTTS(reply);
-      liveStatus.textContent = '';
-      if (liveMode && recognition && !recording) {
-        liveStatus.textContent = '🎙️ Tu turno...';
-        try { recognition.start(); } catch { /* already running */ }
-      }
     }
   } catch (err) {
     console.error(err);
@@ -907,10 +826,8 @@ function setupVoice() {
   };
   recognition.onerror = (e) => {
     if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
-      liveStatus.textContent = '🎙️ Permiso de micrófono denegado';
-      liveMode = false;
-      liveToggle.classList.remove('active');
-      liveToggle.textContent = '🔴 Modo Live';
+      voiceStatus.textContent = '🎙️ Permiso de micrófono denegado';
+      setTimeout(() => { voiceStatus.textContent = ''; }, 2500);
       return;
     }
     voiceStatus.textContent = e.error === 'no-speech' ? 'No te escuché 😅' : `Error: ${e.error}`;
@@ -920,15 +837,6 @@ function setupVoice() {
     recording = false;
     voiceBtn.classList.remove('recording');
     setTimeout(() => { voiceStatus.textContent = ''; }, 1500);
-    // Live mode: if nothing is being processed/spoken, keep listening
-    if (liveMode && !sending && !currentAudio) {
-      liveStatus.textContent = '🎙️ Te escucho...';
-      setTimeout(() => {
-        if (liveMode && !recording && !sending && !currentAudio) {
-          try { recognition.start(); } catch {}
-        }
-      }, 400);
-    }
   };
   recognition.onresult = (event) => {
     let interim = '';
@@ -992,8 +900,6 @@ async function boot() {
   });
 
   setupVoice();
-
-  if (liveToggle) liveToggle.addEventListener('click', toggleLiveMode);
 
   // Init LLM
   try {
