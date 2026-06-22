@@ -4,7 +4,7 @@
 
 import { initLLM } from './llm.js';
 import { sendMessage, clearHistory } from './chat.js';
-import { initTTS, speak, ttsReady, voiceForLang, createSpeechStream } from './tts.js';
+import { initTTS, speakAndPlay, ttsReady, voiceForLang, createSpeechStream, unlockAudio } from './tts.js';
 import {
   TYPE_COLORS, STAT_LABELS, STAT_LABELS_ES, MAX_STAT,
   capitalize, pad3, officialArt, fallbackSprite, hexToRgba,
@@ -716,18 +716,10 @@ async function playTTS(text, btn) {
     }
 
     if (btn) btn.textContent = '🔈';
+    unlockAudio(); // ensure AudioContext is running (called from a click)
     const voice = voiceForLang(text);
-    const url = await speak(text, voice);
+    await speakAndPlay(text, voice);
     if (btn) btn.textContent = '🔊';
-    if (!url) return;
-
-    const audio = new Audio(url);
-    currentAudio = audio;
-    return await new Promise((resolve) => {
-      audio.onended = () => { currentAudio = null; URL.revokeObjectURL(url); resolve(); };
-      audio.onerror = () => { currentAudio = null; resolve(); };
-      audio.play().catch(() => resolve());
-    });
   } catch (err) {
     console.error('TTS error', err);
     if (btn) btn.textContent = '🔊';
@@ -738,6 +730,7 @@ async function playTTS(text, btn) {
 async function toggleLiveMode() {
   liveMode = !liveMode;
   if (liveMode) {
+    unlockAudio(); // unlock AudioContext within this user gesture (click)
     liveToggle.classList.add('active');
     liveToggle.textContent = '🟢 Live activo';
     liveStatus.textContent = '🔊 Preparando voz...';
