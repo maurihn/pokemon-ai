@@ -748,8 +748,14 @@ async function toggleLiveMode() {
           liveStatus.textContent = `🔊 Cargando voz... ${pct}%`;
         }
       });
-      liveStatus.textContent = '🟢 Modo Live listo — habla o escribe';
-      setTimeout(() => { if (liveMode) liveStatus.textContent = ''; }, 2500);
+      // Start listening immediately — this triggers the mic permission prompt
+      if (recognition && !recording) {
+        liveStatus.textContent = '🎙️ Habla ahora...';
+        try { recognition.start(); }
+        catch { /* already running */ }
+      } else if (!recognition) {
+        liveStatus.textContent = '⚠️ Tu navegador no soporta voz';
+      }
     } catch (err) {
       console.error(err);
       liveStatus.textContent = '⚠️ No se pudo cargar la voz';
@@ -762,6 +768,7 @@ async function toggleLiveMode() {
     liveToggle.textContent = '🔴 Modo Live';
     liveStatus.textContent = '';
     if (currentAudio) { currentAudio.pause(); currentAudio = null; }
+    if (recognition && recording) { try { recognition.stop(); } catch {} }
   }
 }
 
@@ -856,6 +863,13 @@ function setupVoice() {
     voiceStatus.textContent = '🎙️ Escuchando...';
   };
   recognition.onerror = (e) => {
+    if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+      liveStatus.textContent = '🎙️ Permiso de micrófono denegado';
+      liveMode = false;
+      liveToggle.classList.remove('active');
+      liveToggle.textContent = '🔴 Modo Live';
+      return;
+    }
     voiceStatus.textContent = e.error === 'no-speech' ? 'No te escuché 😅' : `Error: ${e.error}`;
     setTimeout(() => { voiceStatus.textContent = ''; }, 2500);
   };
@@ -863,6 +877,15 @@ function setupVoice() {
     recording = false;
     voiceBtn.classList.remove('recording');
     setTimeout(() => { voiceStatus.textContent = ''; }, 1500);
+    // Live mode: if nothing is being processed/spoken, keep listening
+    if (liveMode && !sending && !currentAudio) {
+      liveStatus.textContent = '🎙️ Te escucho...';
+      setTimeout(() => {
+        if (liveMode && !recording && !sending && !currentAudio) {
+          try { recognition.start(); } catch {}
+        }
+      }, 400);
+    }
   };
   recognition.onresult = (event) => {
     let interim = '';
