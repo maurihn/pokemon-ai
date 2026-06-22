@@ -4,7 +4,7 @@
 
 import { initLLM } from './llm.js';
 import { sendMessage, clearHistory } from './chat.js';
-import { initTTS, speak, ttsReady, voiceForLang } from './tts.js';
+import { initTTS, speak, ttsReady, voiceForLang, createSpeechStream } from './tts.js';
 import {
   TYPE_COLORS, STAT_LABELS, STAT_LABELS_ES, MAX_STAT,
   capitalize, pad3, officialArt, fallbackSprite, hexToRgba,
@@ -79,7 +79,7 @@ function addMessage(text, role) {
     speakBtn.className = 'speak-btn';
     speakBtn.title = 'Escuchar';
     speakBtn.textContent = '🔊';
-    speakBtn.addEventListener('click', () => playTTS(text, speakBtn));
+    speakBtn.addEventListener('click', () => playTTS(bubble.textContent || text, speakBtn));
     row.appendChild(speakBtn);
   }
   col.appendChild(row);
@@ -777,6 +777,28 @@ async function toggleLiveMode() {
 // ===========================================================
 let sending = false;
 
+// Render Pokémon cards + quick-action chips under a bot message column
+async function renderCardsAndActions(botCol, cards, pokemonInReply) {
+  const cardResults = cards && cards.length > 0
+    ? cards.map(c => ({ status: 'fulfilled', value: c }))
+    : await Promise.allSettled((pokemonInReply || []).map(name => getPokemonCard(name)));
+
+  if (!cardResults.length) return;
+
+  const cardsWrap = document.createElement('div');
+  cardsWrap.className = 'poke-cards';
+  botCol.appendChild(cardsWrap);
+  for (const r of cardResults) {
+    if (r.status !== 'fulfilled' || !r.value) continue;
+    const card = await renderPokemonCard(r.value);
+    if (card) cardsWrap.appendChild(card);
+  }
+  const names = cardResults
+    .filter(r => r.status === 'fulfilled' && r.value)
+    .map(r => r.value.name);
+  if (names.length) renderQuickActions(botCol, names);
+}
+
 async function handleSend() {
   const text = userInput.value.trim();
   if (!text || sending) return;
@@ -788,38 +810,66 @@ async function handleSend() {
   const typing = addTypingIndicator();
 
   try {
+    // ── LIVE MODE: stream tokens → speak sentence-by-sentence + type live ──
+    if (liveMode && ttsReady()) {
+      let botCol = null;
+      let bubble = null;
+      let typingRemoved = false;
+      let liveText = '';
+      const voice = voiceForLang(text); // best guess; refined when first chunk arrives
+      let speech = null;
+
+      const onChunk = (chunk) => {
+        if (!typingRemoved) { removeTypingIndicator(typing); typingRemoved = true; }
+        if (!botCol) {
+          botCol = addMessage('', 'bot');
+          bubble = botCol.querySelector('.bubble');
+          // start the streaming voice once we know roughly the language
+          speech = createSpeechStream(voiceForLang(chunk) || voice);
+          liveStatus.textContent = '🔊 Hablando...';
+        }
+        liveText += chunk;
+        if (bubble) bubble.textContent = liveText;
+        messagesEl.scrollTop = messagesEl.scrollHeight;
+        if (speech) speech.push(chunk);
+      };
+
+      const { reply, pokemonInReply, comparison, cards } =
+        await sendMessage(text, { onChunk });
+
+      if (!typingRemoved) removeTypingIndicator(typing);
+      if (!botCol) { botCol = addMessage(reply, 'bot'); }
+      else if (bubble) bubble.textContent = reply; // ensure final clean text
+
+      if (speech) { speech.done(); }
+
+      await renderCardsAndActions(botCol, cards, pokemonInReply);
+      if (comparison && comparison.a && comparison.b) {
+        setTimeout(() => openBattleModal(comparison.a, comparison.b), 350);
+      }
+
+      // wait for the spoken audio to finish, then hand the mic back
+      if (speech) await speech.waitUntilDone();
+      liveStatus.textContent = '';
+      if (liveMode && recognition && !recording) {
+        liveStatus.textContent = '🎙️ Tu turno...';
+        try { recognition.start(); } catch { /* already running */ }
+      }
+      return;
+    }
+
+    // ── NORMAL MODE (no streaming) ──
     const { reply, pokemonInReply, comparison, cards } = await sendMessage(text);
     removeTypingIndicator(typing);
 
     const botCol = addMessage(reply, 'bot');
+    await renderCardsAndActions(botCol, cards, pokemonInReply);
 
-    // Use cards from tool result if available, otherwise fetch by name
-    const cardResults = cards && cards.length > 0
-      ? cards.map(c => ({ status: 'fulfilled', value: c }))
-      : await Promise.allSettled((pokemonInReply || []).map(name => getPokemonCard(name)));
-
-    // Render Pokémon cards from the tool result / reply
-    if (cardResults.length) {
-      const cardsWrap = document.createElement('div');
-      cardsWrap.className = 'poke-cards';
-      botCol.appendChild(cardsWrap);
-      for (const r of cardResults) {
-        if (r.status !== 'fulfilled' || !r.value) continue;
-        const card = await renderPokemonCard(r.value);
-        if (card) cardsWrap.appendChild(card);
-      }
-      const names = cardResults
-        .filter(r => r.status === 'fulfilled' && r.value)
-        .map(r => r.value.name);
-      if (names.length) renderQuickActions(botCol, names);
-    }
-
-    // Auto-open battle modal if user asked for a comparison
     if (comparison && comparison.a && comparison.b) {
       setTimeout(() => openBattleModal(comparison.a, comparison.b), 350);
     }
 
-    // Live mode: speak the reply, then re-open the mic for continuous conversation
+    // Live mode without TTS preloaded → speak after the fact (fallback)
     if (liveMode && reply) {
       liveStatus.textContent = '🔊 Hablando...';
       await playTTS(reply);

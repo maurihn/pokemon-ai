@@ -1,4 +1,4 @@
-import { chat } from './llm.js';
+import { chat, chatStream } from './llm.js';
 import { getPokemonCard, getComparisonData } from './pokeapi.js';
 
 // ── System prompt with tool instructions ─────────────────────
@@ -98,7 +98,10 @@ async function execBattle(a, b) {
 }
 
 // ── Main sendMessage ─────────────────────────────────────────
-export async function sendMessage(userText) {
+// opts.onChunk(textChunk) — optional. When provided, the FINAL answer is
+// streamed token-by-token through this callback (for live TTS + typing UI).
+export async function sendMessage(userText, opts = {}) {
+  const onChunk = typeof opts.onChunk === 'function' ? opts.onChunk : null;
   history.push({ role: 'user', content: userText });
 
   let cards = [];
@@ -106,7 +109,7 @@ export async function sendMessage(userText) {
   let activeTool = null;
 
   try {
-    // First call — model may emit a tool call
+    // First call — model may emit a tool call (non-streaming, short)
     let raw = await chat([...history]);
     const toolCall = parseToolCall(raw);
 
@@ -115,7 +118,6 @@ export async function sendMessage(userText) {
       let toolResultText = '';
 
       if (toolCall.name === 'search_pokemon') {
-        // args may be comma-separated in first slot or multiple slots
         let names = toolCall.args;
         if (names.length === 1 && names[0].includes(',')) {
           names = names[0].split(',').map(s => s.trim());
@@ -135,19 +137,20 @@ export async function sendMessage(userText) {
         cards = r.cards;
       }
 
-      // Record the model's tool-call turn (cleaned) + tool result
       history.push({ role: 'assistant', content: raw });
       history.push({ role: 'user', content: `[TOOL RESULT]\n${toolResultText}\n[Now answer the user's question using this data, in their language. Do not mention the tool.]` });
 
-      // Second call — final answer
-      const finalRaw = await chat([...history]);
-      const reply = stripToolSyntax(finalRaw) || finalRaw;
+      // Final answer — streamed if onChunk provided
+      const reply = await generateFinalAnswer([...history], onChunk);
       history.push({ role: 'assistant', content: reply });
 
       return { reply, pokemonInReply: cards.map(c => c.name), comparison, tool: activeTool, cards };
     } else {
-      // No tool — direct answer
+      // No tool — the first response IS the answer.
+      // If streaming requested, the non-streamed text was already produced;
+      // emit it as a single chunk so live mode still speaks it.
       const reply = stripToolSyntax(raw) || raw;
+      if (onChunk && reply) onChunk(reply);
       history.push({ role: 'assistant', content: reply });
       return { reply, pokemonInReply: [], comparison: null, tool: null, cards: [] };
     }
@@ -157,6 +160,22 @@ export async function sendMessage(userText) {
     history.push({ role: 'assistant', content: fallback });
     return { reply: fallback, pokemonInReply: [], comparison: null, tool: null, cards: [] };
   }
+}
+
+// Generate the final answer. Streams chunks through onChunk if provided,
+// while filtering any stray tool-call syntax out of the visible text.
+async function generateFinalAnswer(messages, onChunk) {
+  if (!onChunk) {
+    const finalRaw = await chat(messages);
+    return stripToolSyntax(finalRaw) || finalRaw;
+  }
+  // Streaming path — forward clean chunks as they arrive
+  const finalRaw = await chatStream(messages, (chunk) => {
+    // light cleanup per-chunk (don't strip across chunk boundaries aggressively)
+    const clean = chunk.replace(/\[\[TOOL:[^\]]*\]\]/gi, '');
+    if (clean) onChunk(clean);
+  });
+  return stripToolSyntax(finalRaw) || finalRaw;
 }
 
 export function clearHistory() { history.splice(1); }

@@ -1,5 +1,5 @@
 // v1.0.1 - analytics enabled
-import { pipeline } from '@huggingface/transformers';
+import { pipeline, TextStreamer } from '@huggingface/transformers';
 
 const MODEL_ID = 'onnx-community/gemma-4-E2B-it-ONNX';
 const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
@@ -27,6 +27,16 @@ export async function initLLM(onProgress) {
   return generator;
 }
 
+function extractText(result) {
+  const output = result[0]?.generated_text;
+  if (Array.isArray(output)) {
+    const last = output[output.length - 1];
+    return last?.content || String(last || '');
+  }
+  return String(output || '');
+}
+
+// Standard non-streaming generation
 export async function chat(messages) {
   if (!generator) throw new Error('Model not initialized');
   const result = await generator(messages, {
@@ -35,12 +45,30 @@ export async function chat(messages) {
     do_sample: true,
     return_full_text: false,
   });
-  const output = result[0]?.generated_text;
-  if (Array.isArray(output)) {
-    const last = output[output.length - 1];
-    return last?.content || String(last || '');
-  }
-  return String(output || '');
+  return extractText(result);
+}
+
+// Streaming generation — onToken(textChunk) fires for each new piece of text.
+// Returns the full final text when done.
+export async function chatStream(messages, onToken) {
+  if (!generator) throw new Error('Model not initialized');
+
+  const streamer = new TextStreamer(generator.tokenizer, {
+    skip_prompt: true,
+    skip_special_tokens: true,
+    callback_function: (text) => {
+      if (text && onToken) onToken(text);
+    },
+  });
+
+  const result = await generator(messages, {
+    max_new_tokens: isMobile ? 300 : 600,
+    temperature: 0.7,
+    do_sample: true,
+    return_full_text: false,
+    streamer,
+  });
+  return extractText(result);
 }
 
 export function isReady() {
