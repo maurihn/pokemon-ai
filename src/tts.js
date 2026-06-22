@@ -43,9 +43,26 @@ function playRawAudio(raw) {
   return new Promise((resolve) => {
     try {
       const ctx = unlockAudio();
-      if (!ctx) return resolve();
-      const data = raw.data;            // Float32Array
-      const rate = raw.sampling_rate || 24000;
+      if (!ctx || !raw) return resolve();
+
+      // RawAudio exposes the samples either via the `.data` getter or the
+      // `.audio` field (Float32Array, or Float32Array[] of chunks).
+      let data = raw.data;
+      if (!data) {
+        const a = raw.audio;
+        if (Array.isArray(a)) {
+          // concat chunks
+          const len = a.reduce((n, c) => n + (c?.length || 0), 0);
+          data = new Float32Array(len);
+          let off = 0;
+          for (const c of a) { if (c) { data.set(c, off); off += c.length; } }
+        } else {
+          data = a;
+        }
+      }
+      if (!data || !data.length) return resolve();
+
+      const rate = raw.sampling_rate || raw.sampleRate || 24000;
       const buffer = ctx.createBuffer(1, data.length, rate);
       buffer.getChannelData(0).set(data);
       const src = ctx.createBufferSource();
